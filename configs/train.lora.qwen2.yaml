@@ -1,0 +1,38 @@
+base_model: "Qwen/Qwen2-7B-Instruct"
+output_dir: "/content/llm-lab/results/qwen2-7b-lora"
+train_type: "qlora"                 # "lora" or "qlora"
+hub_push: false
+
+bnb_4bit:
+  quant_type: "nf4"
+  compute_dtype: "bfloat16"
+  use_double_quant: true
+
+peft:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]  # Qwen系向け
+
+data:
+  train_file: "/content/llm-lab/data/sft.jsonl"   # {"text": "..."} 形式
+  eval_file: null
+  text_field: "text"
+  max_samples: 10000
+  template: "chatml"               # src/prompt_templates.py で定義
+
+train:
+  learning_rate: 2e-4
+  batch_size: 8
+  gradient_accumulation_steps: 4
+  num_epochs: 1
+  max_steps: -1
+  warmup_ratio: 0.03
+  weight_decay: 0.0
+  logging_steps: 10
+  eval_steps: 0
+  save_steps: 500
+  max_grad_norm: 1.0
+  lr_scheduler_type: "cosine"
+  gradient_checkpointing: true
+  packing: true

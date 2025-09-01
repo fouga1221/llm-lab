@@ -1,0 +1,18 @@
+# Qwen2-7B-Instruct の基本設定
+model_id: "Qwen/Qwen2-7B-Instruct"
+revision: null
+trust_remote_code: true
+
+tokenizer_kwargs:
+  use_fast: true
+  legacy: false
+
+model_kwargs:
+  torch_dtype: "bfloat16"        # "float16" / "bfloat16"
+  attn_implementation: "sdpa"    # "sdpa" 推奨（FA2は相性次第）
+  device_map: "auto"
+  quantization: null             # null / "bnb-4bit"
+  bnb_4bit:
+    quant_type: "nf4"
+    double_quant: true
+    compute_dtype: "bfloat16"

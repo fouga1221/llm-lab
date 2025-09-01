@@ -1,0 +1,6 @@
+seed: 42
+use_flash_attn: false            # まずはOFF（安定優先）。使うなら true
+max_seq_len: 4096
+gpu_memory_utilization: 0.9
+tensor_parallel: 1
+nvml: true
