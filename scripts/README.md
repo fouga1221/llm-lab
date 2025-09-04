@@ -14,7 +14,7 @@
 ---
 
 ## 1) 対話CLI: `scripts/chat_cli.py`
-ローカルでモデルを直接ロードし、1回のプロンプトに対する応答を生成します。APIサーバ不要・最短でモデルの手触りを確認できます。
+ローカルでモデルを直接ロードし、1回のプロンプトまたは複数ターンの対話で応答を生成します。APIサーバ不要・最短でモデルの手触りを確認できます。
 
 - 主なオプション
   - `--model-id`（必須）: 例 `Qwen/Qwen2.5-7B-Instruct`
@@ -26,14 +26,19 @@
   - `--json-schema`: 生成文中のJSONブロックを検証するスキーマ（任意）
   - `--save`: 生成結果をJSONLで保存（例 `runs/chat.jsonl`）
   - `--input`: ユーザ入力（省略時は標準入力から1回分を読み取り）
+  - `--interactive`: 対話REPLを開始（複数ターンの履歴を維持）
+  - `--keep-last`: REPL時に保持する直近ターン数（ユーザ+アシスタントのペア数, 既定 5）
 
 - 実行例
   - 最小: `python scripts/chat_cli.py --model-id Qwen/Qwen2.5-7B-Instruct --input "宿屋はどこ？"`
   - スキーマ検証と保存: `python scripts/chat_cli.py --model-id Qwen/Qwen2.5-7B-Instruct --system app/prompts/system_prompt.md --json-schema configs/actions.schema.json --input "ギルドまで案内して" --save runs/chat.jsonl`
+  - 対話REPL: `python scripts/chat_cli.py --model-id Qwen/Qwen2.5-7B-Instruct --interactive --save runs/chat_session.jsonl`
+    - REPLコマンド: `:exit`/`:quit` 終了, `:reset` 履歴クリア
 
 - 出力
   - 標準出力に応答テキスト
-  - `--save` 指定時は `{"model_id", "prompt", "reply", "latency_ms", "tokens_per_sec", "json_valid"}` を1行1JSONで追記
+  - 1回実行時: `{"model_id", "prompt", "reply", "latency_ms", "tokens_per_sec", "json_valid"}` を1行1JSONで追記
+  - 対話REPL時: ターンごとに `{"session","turn","model_id","user","assistant","latency_ms","tokens_per_sec","json_valid"}` を追記
 
 注意: Windows PowerShellでJSONや引用符を含む引数を渡す場合は、ダブルクォートのエスケープに留意してください。
 
