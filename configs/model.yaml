@@ -1,0 +1,10 @@
+runner: transformers
+model_id: placeholder-model
+context_length: 4096
+sampling:
+  temperature: 0.6
+  top_p: 0.9
+router:
+  primary: placeholder-model
+  fallback: null
+  confidence_threshold: 0.78

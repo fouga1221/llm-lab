@@ -1,0 +1,5 @@
+allow_network: false
+allowed_hosts: []
+allowed_paths: []
+timeouts:
+  request_ms: 10000

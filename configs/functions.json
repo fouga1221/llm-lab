@@ -1,0 +1,28 @@
+{
+  "version": "v1",
+  "functions": [
+    {
+      "name": "npc_idle",
+      "description": "NPCが待機状態になる（理由のログのみ）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reason": {"type": "string"}
+        }
+      },
+      "risk": "low"
+    },
+    {
+      "name": "npc_move_to",
+      "description": "NPCを特定ロケーションへ移動させる",
+      "parameters": {
+        "type": "object",
+        "required": ["destination"],
+        "properties": {
+          "destination": {"type": "string"}
+        }
+      },
+      "risk": "medium"
+    }
+  ]
+}
