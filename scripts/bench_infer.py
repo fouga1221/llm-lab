@@ -171,21 +171,12 @@ def run_transformers(
     load_ms = now_ms() - t0
 
     # Prepare inputs (batch supported)
-    enc = build_inputs(tok, prompts)
+    enc: Dict[str, torch.Tensor] = build_inputs(tok, prompts)  # type: ignore[assignment]
     if torch.cuda.is_available():
         enc = {k: v.to(model.device) for k, v in enc.items()}
 
     # Stream to capture first token time
     streamer = TextIteratorStreamer(tok, skip_special_tokens=True, decode_kwargs={"skip_special_tokens": True})
-
-    gen_kwargs = dict(
-        max_new_tokens=int(max_new_tokens),
-        do_sample=True,
-        temperature=0.4,
-        top_p=0.9,
-        repetition_penalty=1.1,
-        streamer=streamer,
-    )
 
     # Timeout handling
     class Timeout(Exception):
@@ -211,7 +202,17 @@ def run_transformers(
 
         def _gen():
             try:
-                model.generate(**enc, **gen_kwargs)
+                # Pass kwargs explicitly to avoid TypedDict/union inference issues
+                model.generate(
+                    input_ids=enc["input_ids"],
+                    attention_mask=enc["attention_mask"],
+                    max_new_tokens=int(max_new_tokens),
+                    do_sample=True,
+                    temperature=0.4,
+                    top_p=0.9,
+                    repetition_penalty=1.1,
+                    streamer=streamer,
+                )
             except torch.cuda.OutOfMemoryError:  # pragma: no cover - environment dependent
                 nonlocal oom
                 oom = 1
@@ -429,4 +430,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
