@@ -1,0 +1,13 @@
+runner: transformers
+
+# Attention implementation preference: sdpa|flash_attn_2|eager
+attn_impl: sdpa
+
+# KV cache policy (stub here; functional in vLLM/llama.cpp backends typically)
+kv_cache: full
+kv_dtype: fp16
+
+# Device/dtype hints
+device: auto    # auto|cpu|cuda
+dtype: bfloat16 # float16|bfloat16|float32
+

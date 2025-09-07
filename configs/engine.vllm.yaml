@@ -1,0 +1,12 @@
+runner: vllm
+
+# vLLM specific knobs (placeholders)
+tensor_parallel_size: 1
+gpu_memory_utilization: 0.9
+enforce_eager: false
+
+# Attention + KV policy for record-keeping in CSV
+attn_impl: sdpa
+kv_cache: paged
+kv_dtype: fp16
+

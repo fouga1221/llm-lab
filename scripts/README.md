@@ -62,6 +62,23 @@
 
 ---
 
+## 2.5) ベンチ実行: `scripts/bench_infer.py`
+モデル×量子化×ランタイム（現状transformersのみ）×生成設定でベンチマークを実行し、CSVにログします。`NVML`があれば平均GPU利用率も記録します。
+
+- 主なオプション
+  - `--sweep`（必須）: スイープ設定YAML（例 `configs/sweep.example.yaml`）
+  - `--out`（既定 `results/runs.csv`）: 出力CSV
+  - `--timeout`（既定 60）: ケースごとのタイムアウト秒
+
+- 記録列
+  - `model,quant,runtime,attn,kv,kv_dtype,batch_size,load_ms,first_token_ms,tokens_per_s,peak_vram_alloc_mb,peak_vram_reserved_mb,avg_gpu_util,oom,notes`
+
+- 備考
+  - 1ウォームアップ+2計測の3行を出力し、併せて`median`行も追記します。
+  - `runtime != transformers` はスキップ行（stub）を出力。将来拡張予定。
+
+---
+
 ## 3) デコード探索: `scripts/sweep_decode.py`
 単一モデルに対し、`temperature`/`top_p`/`max_new_tokens` のグリッドを走査し、性能の当たりを探ります。
 
@@ -97,6 +114,14 @@ top_p: [0.85, 0.9]
 
 - 出力
   - `/chat` のJSONレスポンスを整形表示
+
+---
+
+## 4.5) 単発推論: `scripts/run_infer.py`
+最小限の一発推論ヘルパ。`chat_cli.py` より軽量なワンライナー用途に。
+
+- 実行例
+  - `python scripts/run_infer.py --model-id Qwen/Qwen2-7B-Instruct --input "宿屋はどこ？"`
 
 ---
 
@@ -141,6 +166,24 @@ FastAPIサーバを起動します（`/chat` `/propose_action` `/schema/function
   - 現状、設定パス（`configs/model.yaml` `configs/security.yaml` `configs/functions.json`）はアプリ内で既定参照しています。将来的にCLIオプション化予定です。
 
 ---
+
+## 8) 量子化ユーティリティ
+
+- AWQ 4bit: `scripts/quantize_awq.py`
+  - 例: `python scripts/quantize_awq.py --model-id Qwen/Qwen2-7B-Instruct --output-dir ./models/qwen2-7b-awq`
+- GPTQ 4bit: `scripts/quantize_gptq.py`
+  - 例: `python scripts/quantize_gptq.py --model-id Qwen/Qwen2-7B-Instruct --output-dir ./models/qwen2-7b-gptq`
+
+備考: いずれも対応パッケージ（`autoawq`/`auto-gptq`）の導入が必要です。
+
+---
+
+## 9) QLoRA学習: `scripts/qlora_train.py`
+PEFT+bitsandbytesでQLoRAによるSFTを行います。設定はYAML（例 `configs/train.lora.qwen2.yaml`）で渡します。
+
+- 実行例
+  - `python scripts/qlora_train.py --config configs/train.lora.qwen2.yaml`
+
 
 ## 代表的なワークフロー（M1）
 1. 対話CLIでモデルの感触確認

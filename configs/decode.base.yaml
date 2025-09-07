@@ -1,0 +1,8 @@
+temperature: 0.4
+top_p: 0.9
+repetition_penalty: 1.1
+max_new_tokens: 256
+stop:
+  - "</assistant>"
+  - "</system>"
+
