@@ -43,7 +43,7 @@ import argparse
 import json
 import os
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
 
 import torch
 from torch.utils.data import Dataset
@@ -78,13 +78,14 @@ def to_dtype(name: str):
     return torch.float32
 
 
-def lazy_import_peft():
+def lazy_import_peft() -> Tuple[Callable[..., Any], Callable[..., Any]]:
     try:
-        import peft  # noqa: F401
-    except ImportError:  # pragma: no cover - environment dependent
-        os.system("pip install -q peft")
-    from peft import LoraConfig, get_peft_model
-    return LoraConfig, get_peft_model
+        from peft import LoraConfig, get_peft_model  # type: ignore
+        return LoraConfig, get_peft_model
+    except Exception:
+        print("[ERROR] peft is not installed. Please install it to run QLoRA:")
+        print("        pip install peft")
+        raise SystemExit(0)
 
 
 class JsonlText(Dataset):
@@ -128,7 +129,13 @@ def main() -> None:
         model_kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         model_kwargs["device_map"] = "auto"
 
-    model = AutoModelForCausalLM.from_pretrained(base, trust_remote_code=True, **model_kwargs)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(base, trust_remote_code=True, **model_kwargs)
+    except Exception as e:
+        print("[ERROR] Failed to load model for QLoRA. If you enabled 4-bit, ensure bitsandbytes is installed.")
+        print("        pip install bitsandbytes")
+        print(f"        detail: {type(e).__name__}")
+        raise SystemExit(0)
 
     LoraConfig, get_peft_model = lazy_import_peft()
     peft_cfg = LoraConfig(
@@ -177,4 +184,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

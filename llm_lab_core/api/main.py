@@ -1,176 +1,45 @@
-"""
-Main FastAPI application and endpoint definitions.
-Corresponds to sections 2 and 9 of the detailed design document.
-"""
-from fastapi import FastAPI, HTTPException, Depends
-from typing import Dict, Any
+"""FastAPI app exposing /chat and /propose_action endpoints (llm_lab_core)."""
+from __future__ import annotations
 
-from llm_lab_core.api.models import ChatRequest, ChatResponse, ProposeActionRequest, ProposeActionResponse, FunctionSchemaResponse
-from llm_lab_core.core.config import ConfigLoader
-from llm_lab_core.core.logging import Logger
-from llm_lab_core.core.exceptions import *
-from llm_lab_core.tooling.registry import FunctionRegistry, FunctionSpec
-from llm_lab_core.security.validation import ActionValidator, IOPolicy
-from llm_lab_core.tooling.validation import JsonSchemaValidator
-# ... other imports will be added as components are built
+from typing import Any, Dict
 
-# --- App Initialization ---
-app = FastAPI(
-    title="Local LLM NPC Service",
-    description="Provides natural language interaction and structured action proposals for game NPCs.",
-    version="0.1.0",
-)
+from fastapi import FastAPI, HTTPException
 
-# --- Dependency Injection Setup ---
-# This is a simplified setup. A real app would manage state more robustly.
-# For now, we load configs at startup.
-
-def get_logger():
-    # In a real app, this would be configured from a file
-    return Logger("api")
-
-def get_config():
-    # These paths would come from environment variables or CLI args
-    try:
-        return ConfigLoader(
-            model_path="configs/model.yaml",
-            security_path="configs/security.yaml",
-            functions_path="configs/functions.json"
-        )
-    except FileNotFoundError as e:
-        raise ConfigurationError(f"A required configuration file was not found: {e.filename}")
+from llm_lab_core.schemas import ChatRequest, ChatResponse
+from llm_lab_core.runners import get_runner
+from llm_lab_core.registry.registry import get_schema, validate_text_against_schema
 
 
-@app.on_event("startup")
-def startup_event():
-    """
-    On startup, load all necessary configurations and initialize components.
-    This makes them available to the dependency injection system.
-    """
-    logger = get_logger()
-    logger.info("Starting up application and loading configurations...")
-    try:
-        config_loader = get_config()
-        app.state.config_loader = config_loader
-        app.state.model_config = config_loader.load_model()
-        app.state.security_config = config_loader.load_security()
-        app.state.functions_config = config_loader.load_functions()
+app = FastAPI(title="LLM Lab API")
 
-        app.state.function_registry = FunctionRegistry.from_json(app.state.functions_config)
-        
-        # Placeholder for the actions schema
-        actions_schema = {
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "properties": {
-                "actions": {
-                    "type": "array",
-                    "items": {"type": "object"}
-                }
-            },
-            "required": ["actions"]
-        }
-        
-        app.state.io_policy = IOPolicy(
-            allow_network=app.state.security_config.get('allow_network', False),
-            allowed_hosts=app.state.security_config.get('allowed_hosts', []),
-            allowed_paths=app.state.security_config.get('allowed_paths', [])
-        )
-        
-        app.state.action_validator = ActionValidator(
-            schema_validator=JsonSchemaValidator(actions_schema),
-            io_policy=app.state.io_policy,
-            registry=app.state.function_registry
-        )
-        
-        logger.info("Configurations loaded successfully.")
-        logger.info(f"Found {len(app.state.function_registry.names())} functions.")
-
-    except Exception as e:
-        logger.error("Failed to initialize application state on startup.", error=str(e))
-        # This will prevent the app from starting if configs are bad
-        raise ConfigurationError(f"Startup failed: {e}") from e
-
-
-# --- Endpoints ---
-
-@app.get("/schema/functions", response_model=FunctionSchemaResponse)
-def get_function_schemas():
-    """
-    Returns the schemas of all available functions.
-    """
-    registry: FunctionRegistry = app.state.function_registry
-    functions_list = [spec._asdict() for spec in registry.all_specs()]
-    
-    return FunctionSchemaResponse(
-        functions=functions_list,
-        version=app.state.functions_config.get("version", "v1")
-    )
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, logger: Logger = Depends(get_logger)):
-    """
-    Handles a user's chat message, returns a natural language reply and
-    proposed structured actions.
-    """
-    logger.info("Received chat request", session_id=request.session_id)
-    # This is a placeholder for the full logic described in the design doc (section 9)
-    # 1. Get conversation history from memory
-    # 2. Build prompt with RAG context if needed
-    # 3. Route and generate with ConfidenceRouter
-    # 4. Validate final actions
-    # 5. Return response
-    
-    # Placeholder implementation:
+def chat(req: ChatRequest) -> ChatResponse:
+    model_id = req.model or "Qwen/Qwen2-7B-Instruct"
+    runner = get_runner(req.runtime or "transformers")
     try:
-        # Simulate a call to the LLM
-        reply_text = f"You said: '{request.input}'. I am a placeholder response."
-        actions = {
-            "actions": [
-                {
-                    "function": "npc_idle",
-                    "arguments": {"reason": "placeholder_response"},
-                    "confidence": 0.99,
-                    "rationale": "This is a dummy action as the system is not fully implemented."
-                }
-            ]
-        }
-        
-        # Final validation
-        is_valid, errors = app.state.action_validator.validate(actions)
-        if not is_valid:
-            logger.error("Generated actions failed final validation", errors=errors)
-            # Decide on a graceful failure mode
-            actions["actions"] = [] # Clear actions on validation failure
-
-        meta = {
-            "model": "placeholder_model",
-            "latency_ms": 123,
-            "confidence": 0.99
-        }
-        return ChatResponse(reply=reply_text, structured_actions=actions, meta=meta)
-
+        runner.load(model_id)
     except Exception as e:
-        logger.error("An unexpected error occurred in /chat endpoint", error=str(e))
-        raise HTTPException(status_code=500, detail="An internal error occurred.")
+        raise HTTPException(status_code=500, detail=f"load failed: {type(e).__name__}")
+    decode = (req.decode.dict() if req.decode else {})  # type: ignore[attr-defined]
+    result = runner.generate([m.dict() for m in req.messages], decode, req.system_prompt)
+    return ChatResponse(**result)
 
 
-@app.post("/propose_action", response_model=ProposeActionResponse)
-async def propose_action(request: ProposeActionRequest, logger: Logger = Depends(get_logger)):
-    """
-    Given a context, proposes a structured action without a full chat reply.
-    """
-    logger.info("Received propose_action request", session_id=request.session_id)
-    # Placeholder implementation
-    actions = [
-        {
-            "function": "npc_move_to",
-            "arguments": {"destination": "market_square"},
-        }
-    ]
-    meta = {
-        "model": "placeholder_model",
-        "latency_ms": 95,
-        "confidence": 0.88
-    }
-    return ProposeActionResponse(actions=actions, meta=meta)
+@app.post("/propose_action")
+def propose_action(req: ChatRequest) -> Dict[str, Any]:
+    if not req.schema_name:
+        raise HTTPException(status_code=400, detail="schema_name required")
+    model_id = req.model or "Qwen/Qwen2-7B-Instruct"
+    runner = get_runner(req.runtime or "transformers")
+    try:
+        runner.load(model_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"load failed: {type(e).__name__}")
+    decode = (req.decode.dict() if req.decode else {})  # type: ignore[attr-defined]
+    messages = [m.dict() for m in req.messages]
+    messages.append({"role": "user", "content": "次の回答はJSONのみで返してください。"})
+    result = runner.generate(messages, decode, req.system_prompt)
+    schema = get_schema(req.schema_name)
+    ok, errs, obj = validate_text_against_schema(result["text"], schema)
+    return {"actions": obj if ok else None, "valid": ok, "errors": errs}

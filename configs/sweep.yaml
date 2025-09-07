@@ -1,0 +1,22 @@
+models:
+  - hf: Qwen/Qwen2-7B-Instruct
+  - hf: mistralai/Mistral-7B-Instruct-v0.3
+  - hf: meta-llama/Meta-Llama-3-8B-Instruct
+
+quant: [float16, bnb-int8, bnb-nf4, gptq-int4, awq-int4, gguf-q4]
+runtime: [transformers, vllm, llamacpp, exllamav2]
+attn_impl: [sdpa, flash_attn_2, eager]
+kv_cache: [full, paged]
+kv_dtype: [fp16, kv8bit]
+batch_size: [1, 4]
+seed: 42
+max_tokens: 256
+
+presets:
+  - name: chat_only
+    prompts: [npc_greeting, npc_trade, npc_quest]
+  - name: codegen
+    prompts: [state_update_patch, tool_call_suggest, edge_case]
+
+repeats: 3  # warmup1 + 本計測2
+

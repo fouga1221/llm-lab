@@ -20,7 +20,7 @@ def main():
     args = parser.parse_args()
 
     uvicorn.run(
-        "app.api.main:app",
+        "llm_lab_core.api.main:app",
         host=args.host,
         port=args.port,
         reload=args.reload,

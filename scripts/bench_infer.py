@@ -23,6 +23,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
+import traceback
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -54,6 +55,7 @@ CSV_HEADER = [
     "peak_vram_reserved_mb",
     "avg_gpu_util",
     "oom",
+    "timeout",
     "notes",
 ]
 
@@ -142,6 +144,7 @@ class TrialMetrics:
     peak_vram_reserved_mb: float
     avg_gpu_util: Optional[float]
     oom: int
+    timeout: int
     notes: str
 
 
@@ -195,6 +198,7 @@ def run_transformers(
 
     first_token_ms = math.nan
     oom = 0
+    timeout_flag = 0
     avg_util: Optional[float] = None
 
     mon = NVMLMonitor()
@@ -254,6 +258,7 @@ def run_transformers(
     except Timeout:  # pragma: no cover - environment dependent
         oom = 0
         first_token_ms = math.inf
+        timeout_flag = 1
     finally:
         if mon.available:
             mon.stop()
@@ -286,8 +291,19 @@ def run_transformers(
         peak_vram_reserved_mb=peak_reserved,
         avg_gpu_util=round(avg_util, 2) if avg_util is not None else None,
         oom=oom,
+        timeout=timeout_flag,
         notes="",
     )
+
+
+def write_case_log(log_dir: str, case_id: str, content: str) -> None:
+    try:
+        p = Path(log_dir) / f"{case_id}.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(content.rstrip() + "\n")
+    except Exception:
+        pass
 
 
 def main() -> None:
@@ -374,10 +390,11 @@ def main() -> None:
                                                     -1,
                                                     -1,
                                                     0,
+                                                    0,
                                                     f"{pname}|run",
                                                 ])
                         except Exception:
-                            w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, f"{rt}_not_installed"])
+                            w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_not_installed"])
                         continue
                     for attn in attns:
                         for kv in kvs:
@@ -415,8 +432,11 @@ def main() -> None:
                                                     peak_vram_reserved_mb=-1.0,
                                                     avg_gpu_util=None,
                                                     oom=0,
+                                                    timeout=0,
                                                     notes=f"{pname}|error:{type(e).__name__}",
                                                 )
+                                                case_id = f"{mid}__{quant}__{rt}__{attn}__{kv}__{kvd}__bs{bs}__{pname}__{note}"
+                                                write_case_log(args.log_dir, case_id, traceback.format_exc())
                                             trials.append(tm)
                                             w.writerow([
                                                 mid,
@@ -433,6 +453,7 @@ def main() -> None:
                                                 tm.peak_vram_reserved_mb,
                                                 (tm.avg_gpu_util if tm.avg_gpu_util is not None else -1),
                                                 tm.oom,
+                                                tm.timeout,
                                                 tm.notes,
                                             ])
 
@@ -463,6 +484,7 @@ def main() -> None:
                                                 median([t.peak_vram_reserved_mb for t in runs]),
                                                 median([(t.avg_gpu_util if t.avg_gpu_util is not None else -1) for t in runs]),
                                                 1 if any(t.oom for t in runs) else 0,
+                                                1 if any((t.timeout == 1) for t in runs) else 0,
                                                 f"{pname}|median",
                                             ])
 

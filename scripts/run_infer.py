@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from llm_lab_core.runners import get_runner
 from llm_lab_core.utils.chat_template import apply_chat_template
 
 
@@ -44,43 +45,54 @@ def main() -> None:
     if args.device == "cpu":
         device_map = {"": "cpu"}
 
-    tok = AutoTokenizer.from_pretrained(args.model_id, revision=args.revision)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_id,
-        revision=args.revision,
-        torch_dtype=torch_dtype,
-        device_map=device_map,
-        trust_remote_code=True,
-    )
-
     user_input = args.input if args.input is not None else sys.stdin.read().strip()
     messages = []
     if args.system:
         messages.append({"role": "system", "content": Path(args.system).read_text(encoding="utf-8")})
     messages.append({"role": "user", "content": user_input + ("\nJSONのみで出力してください。" if args.json_only else "")})
-    prompt = apply_chat_template(tok, messages, add_generation_prompt=True)
+    if args.runtime == "transformers":
+        tok = AutoTokenizer.from_pretrained(args.model_id, revision=args.revision)
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_id,
+            revision=args.revision,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
+            trust_remote_code=True,
+        )
+        prompt = apply_chat_template(tok, messages, add_generation_prompt=True)
 
-    inputs = tok(prompt, return_tensors="pt")
-    if args.device == "cuda" or (args.device == "auto" and torch.cuda.is_available()):
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        inputs = tok(prompt, return_tensors="pt")
+        if args.device == "cuda" or (args.device == "auto" and torch.cuda.is_available()):
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    gen_kwargs = dict(
-        max_new_tokens=args.max_new_tokens,
-        do_sample=True,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        repetition_penalty=args.repetition_penalty,
-    )
+        gen_kwargs = dict(
+            max_new_tokens=args.max_new_tokens,
+            do_sample=True,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            repetition_penalty=args.repetition_penalty,
+        )
 
-    t0 = time.perf_counter()
-    with torch.no_grad():
-        out = model.generate(**inputs, **gen_kwargs)
-    dt = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            out = model.generate(**inputs, **gen_kwargs)
+        dt = time.perf_counter() - t0
 
-    decoded = tok.decode(out[0], skip_special_tokens=True)
-    reply = decoded.split("<|assistant|>")[-1].strip() if "<|assistant|>" in decoded else decoded
-    print(reply)
-    print(f"\n[latency_ms]={round(dt*1000,2)}", file=sys.stderr)
+        decoded = tok.decode(out[0], skip_special_tokens=True)
+        reply = decoded.split("<|assistant|>")[-1].strip() if "<|assistant|>" in decoded else decoded
+        print(reply)
+        print(f"\n[latency_ms]={round(dt*1000,2)}", file=sys.stderr)
+        return
+
+    # Non-transformers runtime path via runners
+    runner = get_runner(args.runtime)
+    runner.load(args.model_id)
+    decode = dict(max_new_tokens=args.max_new_tokens, temperature=args.temperature, top_p=args.top_p, repetition_penalty=args.repetition_penalty)
+    res = runner.generate(messages, decode)
+    print(res.get("text", ""))
+    t = res.get("timings", {})
+    if t:
+        print(f"\n[first_token_ms]={t.get('first_token_ms', -1)} [tokens_per_s]={t.get('tokens_per_s', -1)}", file=sys.stderr)
 
 
 if __name__ == "__main__":

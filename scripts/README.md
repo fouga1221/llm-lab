@@ -163,7 +163,8 @@ FastAPIサーバを起動します（`/chat` `/propose_action` `/schema/function
   - `python scripts/run_server.py --reload`
 
 - 備考
-  - 現状、設定パス（`configs/model.yaml` `configs/security.yaml` `configs/functions.json`）はアプリ内で既定参照しています。将来的にCLIオプション化予定です。
+  - 内部で `uvicorn llm_lab_core.api.main:app` を起動します。
+  - 現状、設定パス（`configs/model.yaml` など）はアプリ内のデフォルトを使用します。
 
 ---
 

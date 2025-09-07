@@ -21,13 +21,13 @@ python scripts/run_infer.py --model-id Qwen/Qwen2-7B-Instruct --input "こんに
 3) ベンチ実行（スイープ）
 
 ```
-python scripts/bench_infer.py --sweep configs/sweep.example.yaml --out results/runs.csv
+python scripts/bench_infer.py --sweep configs/sweep.yaml --out results/runs.csv
 ```
 
 4) API 起動（FastAPI）
 
 ```
-uvicorn app.main:app --reload
+uvicorn llm_lab_core.api.main:app --reload
 ```
 
 5) 追加依存（任意）
@@ -52,7 +52,7 @@ uvicorn app.main:app --reload
 
 ```
 !python scripts/run_infer.py --model-id Qwen/Qwen2-7B-Instruct --input "こんにちは"
-!python scripts/bench_infer.py --sweep configs/sweep.example.yaml --out results/runs.csv
+!python scripts/bench_infer.py --sweep configs/sweep.yaml --out results/runs.csv
 ```
 
 GPU メモリ監視は別セルで `!nvidia-smi -l 3` を推奨。
@@ -75,4 +75,3 @@ model,quant,runtime,attn,kv,kv_dtype,batch_size,load_ms,first_token_ms,tokens_pe
 - OOM: `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` を試す、max_new_tokens を下げる、量子化を使う
 - 依存の不整合: `pip install -r requirements.txt` を再実行
 - 追加ランタイム未導入: ベンチでは自動で skip。
-
