@@ -5,7 +5,7 @@ Corresponds to section 9 of the detailed design document.
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 
-from app.core.types import StructuredActions
+from llm_lab_core.core.types import StructuredActions
 
 # Using Pydantic's BaseModel for automatic validation and serialization.
 

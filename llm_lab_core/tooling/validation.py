@@ -6,7 +6,7 @@ import json
 from typing import Dict, Any, Tuple, Optional, List, cast
 from jsonschema import validate, ValidationError
 
-from app.core.types import StructuredActions
+from llm_lab_core.core.types import StructuredActions
 
 class JsonSchemaValidator:
     """

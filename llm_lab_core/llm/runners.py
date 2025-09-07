@@ -3,7 +3,7 @@ LLM Runner Interfaces and Implementations.
 Corresponds to section 5.1 of the detailed design document.
 """
 from abc import ABC, abstractmethod
-from app.core.types import Message, GenerationParams, StreamChunk, ModelInfo
+from llm_lab_core.core.types import Message, GenerationParams, StreamChunk, ModelInfo
 from typing import List, Iterable
 
 # Using Protocol for interface definition as per the design

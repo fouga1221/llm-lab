@@ -5,8 +5,8 @@ Corresponds to section 7.3 of the detailed design document.
 import json
 from typing import Dict, Any, cast
 
-from app.core.types import StructuredActions, empty_actions
-from app.tooling.registry import FunctionRegistry
+from llm_lab_core.core.types import StructuredActions, empty_actions
+from llm_lab_core.tooling.registry import FunctionRegistry
 
 class ActionBuilder:
     """

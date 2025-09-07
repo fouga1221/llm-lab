@@ -4,11 +4,11 @@ Corresponds to section 5.2 of the detailed design document.
 """
 from typing import Dict, Any, Optional, Tuple, List
 
-from app.core.types import Message, GenerationParams, StructuredActions, RouteDecision, empty_actions
-from app.llm.runners import BaseRunner
+from llm_lab_core.core.types import Message, GenerationParams, StructuredActions, RouteDecision, empty_actions
+from llm_lab_core.llm.runners import BaseRunner
 # Forward-referencing for type hints to avoid circular imports
-from app.tooling.validation import JsonStreamGuard
-from app.tooling.build import SelfChecker
+from llm_lab_core.tooling.validation import JsonStreamGuard
+from llm_lab_core.tooling.build import SelfChecker
 
 
 class ConfidenceRouter:

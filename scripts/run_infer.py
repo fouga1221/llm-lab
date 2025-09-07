@@ -1,8 +1,9 @@
 """
-Simple one-shot inference helper (thin wrapper around transformers) for quick manual tests.
+Simple one-shot inference helper that supports runtime switch and chat template.
 
-Usage example:
+Examples:
   python scripts/run_infer.py --model-id Qwen/Qwen2-7B-Instruct --input "宿屋はどこ？"
+  python scripts/run_infer.py --runtime transformers --system app/prompts/system_prompt.md --input "こんにちは"
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from llm_lab_core.utils.chat_template import apply_chat_template
 
 
 def main() -> None:
@@ -21,11 +23,14 @@ def main() -> None:
     ap.add_argument("--revision", default=None)
     ap.add_argument("--dtype", choices=["float16", "bfloat16", "float32"], default="bfloat16")
     ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    ap.add_argument("--runtime", choices=["transformers","vllm","exllamav2","llamacpp"], default="transformers")
+    ap.add_argument("--system", default=None, help="Optional system prompt text")
     ap.add_argument("--input", default=None, help="If omitted, read from stdin")
     ap.add_argument("--max-new-tokens", type=int, default=256)
     ap.add_argument("--temperature", type=float, default=0.4)
     ap.add_argument("--top-p", type=float, default=0.9)
     ap.add_argument("--repetition-penalty", type=float, default=1.1)
+    ap.add_argument("--json-only", action="store_true", help="Ask the model to return JSON only")
     args = ap.parse_args()
 
     dtype_map = {
@@ -49,7 +54,11 @@ def main() -> None:
     )
 
     user_input = args.input if args.input is not None else sys.stdin.read().strip()
-    prompt = f"<|user|>\n{user_input}\n<|assistant|>\n"
+    messages = []
+    if args.system:
+        messages.append({"role": "system", "content": Path(args.system).read_text(encoding="utf-8")})
+    messages.append({"role": "user", "content": user_input + ("\nJSONのみで出力してください。" if args.json_only else "")})
+    prompt = apply_chat_template(tok, messages, add_generation_prompt=True)
 
     inputs = tok(prompt, return_tensors="pt")
     if args.device == "cuda" or (args.device == "auto" and torch.cuda.is_available()):
@@ -76,4 +85,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

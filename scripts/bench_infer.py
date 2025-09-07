@@ -36,6 +36,7 @@ from transformers import (
 )
 
 from scripts.monitor import NVMLMonitor
+from llm_lab_core.runners import get_runner
 
 
 CSV_HEADER = [
@@ -83,8 +84,15 @@ def load_prompts_by_name(name: str) -> List[str]:
     if yml.exists():
         try:
             data = yaml.safe_load(yml.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and "prompts" in data:
-                return [str(x) for x in data["prompts"]]
+            if isinstance(data, dict):
+                # New preset format with system/user/meta
+                if "user" in data or "system" in data:
+                    sys_txt = data.get("system", "")
+                    usr_txt = data.get("user", "")
+                    combined = (f"<|system|>\n{sys_txt}\n" if sys_txt else "") + f"<|user|>\n{usr_txt}\n<|assistant|>\n"
+                    return [combined]
+                if "prompts" in data:
+                    return [str(x) for x in data["prompts"]]
             if isinstance(data, list):
                 return [str(x) for x in data]
         except Exception:
@@ -335,8 +343,41 @@ def main() -> None:
             for quant in quants:
                 for rt in runtimes:
                     if rt != "transformers":
-                        # Stub/skip others for now
-                        w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, "runtime_not_implemented"])
+                        # Try minimal runner path; if unavailable, record skip
+                        try:
+                            runner = get_runner(rt)
+                            runner.load(mid)
+                            for attn in attns:
+                                for kv in kvs:
+                                    for kvd in kv_dtypes:
+                                        for bs in batch_sizes:
+                                            for pr in presets:
+                                                pname = pr.get("name")
+                                                prompts = preset_prompts.get(pname) or ["こんにちは。調子はどう？"]
+                                                batch_prompts = prompts[:bs] or [prompts[0]]
+                                                t0 = now_ms()
+                                                res = runner.generate_text(batch_prompts, {"max_new_tokens": max_tokens, "temperature": 0.4, "top_p": 0.9, "repetition_penalty": 1.1})
+                                                dt = now_ms() - t0
+                                                timings = res.get("timings", {})
+                                                w.writerow([
+                                                    mid,
+                                                    quant,
+                                                    rt,
+                                                    attn,
+                                                    kv,
+                                                    kvd,
+                                                    bs,
+                                                    -1,  # load_ms unknown here
+                                                    timings.get("first_token_ms", -1),
+                                                    timings.get("tokens_per_s", -1),
+                                                    -1,
+                                                    -1,
+                                                    -1,
+                                                    0,
+                                                    f"{pname}|run",
+                                                ])
+                        except Exception:
+                            w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, f"{rt}_not_installed"])
                         continue
                     for attn in attns:
                         for kv in kvs:

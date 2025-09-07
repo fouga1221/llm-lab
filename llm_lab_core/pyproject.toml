@@ -1,0 +1,9 @@
+// filepath: /workspaces/llm-lab/pyproject.toml
+[project]
+name = "llm-lab-core"
+version = "0.1.0"
+description = "Core components for the LLM Lab project."
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["llm_lab_core*"]

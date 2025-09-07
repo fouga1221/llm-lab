@@ -3,7 +3,7 @@ Conversation history management.
 Corresponds to section 6.1 of the detailed design document.
 """
 from typing import List
-from app.core.types import Message
+from llm_lab_core.core.types import Message
 
 class ConversationMemory:
     """

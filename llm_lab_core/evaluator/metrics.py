@@ -4,7 +4,7 @@ Corresponds to section 10 of the detailed design document.
 """
 from typing import List, Dict, Any, Iterable
 
-from app.core.types import StructuredAction
+from llm_lab_core.core.types import StructuredAction
 
 class MetricsCalculator:
     """

@@ -1,0 +1,8 @@
+system: |
+  あなたはゲームエンジンの関数呼び出し案を提案するアシスタント。JSONで出力する準備をする。
+user: |
+  商人から『回復薬』を購入するために呼び出すべき関数を提案して。
+meta:
+  category: codegen
+  expected_traits: ["JSON志向", "簡潔"]
+

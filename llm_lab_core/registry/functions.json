@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "StructuredActions",
+  "type": "object",
+  "properties": {
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "args": {"type": "object", "additionalProperties": true}
+        },
+        "required": ["name", "args"]
+      }
+    }
+  },
+  "required": ["actions"],
+  "additionalProperties": false
+}
+

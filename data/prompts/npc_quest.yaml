@@ -1,0 +1,8 @@
+system: |
+  あなたは○○王国の商人NPC。簡単なお使いクエストを持っている。
+user: |
+  何か手伝えることはある？
+meta:
+  category: chat_only
+  expected_traits: ["提案", "簡潔"]
+

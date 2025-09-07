@@ -5,7 +5,7 @@ Corresponds to `scripts/run_server.py` in the detailed design document.
 import argparse
 import uvicorn
 
-from app.api.main import app
+from llm_lab_core.api.main import app
 
 def main():
     parser = argparse.ArgumentParser(description="Run the FastAPI server for the LLM NPC.")

@@ -5,10 +5,10 @@ Corresponds to section 8 of the detailed design document.
 from typing import List, Tuple, Optional
 from urllib.parse import urlparse
 
-from app.core.types import StructuredActions
-from app.core.exceptions import SecurityError
-from app.tooling.registry import FunctionRegistry
-from app.tooling.validation import JsonSchemaValidator
+from llm_lab_core.core.types import StructuredActions
+from llm_lab_core.core.exceptions import SecurityError
+from llm_lab_core.tooling.registry import FunctionRegistry
+from llm_lab_core.tooling.validation import JsonSchemaValidator
 from jsonschema import validate, ValidationError
 
 class IOPolicy:

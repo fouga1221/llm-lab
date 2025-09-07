@@ -5,13 +5,13 @@ Corresponds to sections 2 and 9 of the detailed design document.
 from fastapi import FastAPI, HTTPException, Depends
 from typing import Dict, Any
 
-from app.api.models import ChatRequest, ChatResponse, ProposeActionRequest, ProposeActionResponse, FunctionSchemaResponse
-from app.core.config import ConfigLoader
-from app.core.logging import Logger
-from app.core.exceptions import *
-from app.tooling.registry import FunctionRegistry, FunctionSpec
-from app.security.validation import ActionValidator, IOPolicy
-from app.tooling.validation import JsonSchemaValidator
+from llm_lab_core.api.models import ChatRequest, ChatResponse, ProposeActionRequest, ProposeActionResponse, FunctionSchemaResponse
+from llm_lab_core.core.config import ConfigLoader
+from llm_lab_core.core.logging import Logger
+from llm_lab_core.core.exceptions import *
+from llm_lab_core.tooling.registry import FunctionRegistry, FunctionSpec
+from llm_lab_core.security.validation import ActionValidator, IOPolicy
+from llm_lab_core.tooling.validation import JsonSchemaValidator
 # ... other imports will be added as components are built
 
 # --- App Initialization ---
