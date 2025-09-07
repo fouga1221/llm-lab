@@ -1,0 +1,2 @@
+# Exclude private data/configs from version control
+.private/
