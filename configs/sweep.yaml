@@ -14,9 +14,7 @@ max_tokens: 256
 
 presets:
   - name: chat_only
-    prompts: [npc_greeting, npc_trade, npc_quest]
-  - name: codegen
-    prompts: [state_update_patch, tool_call_suggest, edge_case]
+    prompts: [chara_shopping_dialog, chara_charming_dialog, chara_drilling_dialog, chara_sad_dialog, chara_social_rule_dialog]
 
 repeats: 3  # warmup1 + 本計測2
 
