@@ -1,2 +1,17 @@
 # Exclude private data/configs from version control
 .private/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Generated files
+results/
