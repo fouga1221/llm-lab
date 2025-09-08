@@ -166,7 +166,7 @@ def _worker_main(in_q: "mp.Queue", out_q: "mp.Queue", rt: str, model_id: str, qu
         load_ms = (_time.perf_counter() - t0) * 1000.0
         out_q.put({"event": "loaded", "ok": True, "load_ms": round(load_ms, 2)})
     except Exception as e:
-        out_q.put({"event": "loaded", "ok": False, "error": str(e)})
+        out_q.put({"event": "loaded", "ok": False, "error": str(e), "trace": _traceback.format_exc()})
         return
 
     while True:
@@ -341,7 +341,8 @@ def main() -> None:
                         if worker.last_info:
                             details.append(str(worker.last_info))
                         write_case_log(args.log_dir, case_id, "\n".join(details))
-                        w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_not_installed_or_failed", ""])
+                        reason = (worker.last_error or "unknown").replace("\n", " ")
+                        w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_load_failed:{reason}", ""])
                         worker.terminate()
                         continue
                     load_ms = worker.load_ms
