@@ -59,6 +59,14 @@ class TransformersRunner:
         except Exception:
             pass
         self.model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True, **model_kwargs)
+        # Align pad_token_id on the model to suppress "Setting pad_token_id to eos_token_id" logs
+        try:
+            if getattr(self.tok, "pad_token_id", None) is not None:
+                self.model.config.pad_token_id = self.tok.pad_token_id  # type: ignore[attr-defined]
+                if getattr(self.model, "generation_config", None) is not None:
+                    self.model.generation_config.pad_token_id = self.tok.pad_token_id  # type: ignore[attr-defined]
+        except Exception:
+            pass
         self.model_id = model_id
 
     def _build_prompt(self, messages: List[Dict[str, str]], system_prompt: Optional[str]) -> str:
