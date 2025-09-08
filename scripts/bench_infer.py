@@ -198,6 +198,8 @@ class InferenceWorker:
         self.in_q: "mp.Queue" = mp.Queue()
         self.out_q: "mp.Queue" = mp.Queue()
         self.load_ms: float = -1.0
+        self.last_error: Optional[str] = None
+        self.last_info: Optional[str] = None
 
     def start(self, timeout_s: float = 120.0) -> bool:
         if self.proc is not None and self.proc.is_alive():
@@ -207,9 +209,13 @@ class InferenceWorker:
         try:
             msg = self.out_q.get(timeout=timeout_s)
         except Exception:
+            self.last_error = f"timeout_waiting_loaded({timeout_s}s)"
             self.terminate()
             return False
         if not msg.get("ok", False):
+            self.last_error = f"load_exception: {msg.get('error', 'unknown')}"
+            if msg.get("trace"):
+                self.last_info = str(msg.get("trace"))
             self.terminate()
             return False
         self.load_ms = float(msg.get("load_ms", -1))
@@ -325,6 +331,16 @@ def main() -> None:
                     # Start a worker process per (rt, model, quant) to keep warm and enable timeout
                     worker = InferenceWorker(rt, mid, quant)
                     if not worker.start(timeout_s=float(args.load_timeout)):
+                        # Log detailed load failure diagnostics
+                        case_id = f"{mid}__{quant}__{rt}__load"
+                        env = f"cuda_is_available={torch.cuda.is_available()} cuda_device_count={(torch.cuda.device_count() if torch.cuda.is_available() else 0)}"
+                        details = [
+                            f"load_failed: {worker.last_error or 'unknown'}",
+                            env,
+                        ]
+                        if worker.last_info:
+                            details.append(str(worker.last_info))
+                        write_case_log(args.log_dir, case_id, "\n".join(details))
                         w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_not_installed_or_failed", ""])
                         worker.terminate()
                         continue
@@ -377,6 +393,14 @@ def main() -> None:
                                                 if not ok:
                                                     # timeout or error
                                                     timeout_flag = 1 if msg.get("timeout") else 0
+                                                    # Write reason log
+                                                    case_id = f"{mid}__{quant}__{rt}__{attn}__{kv}__{kvd}__bs{bs}__{pname}__{note}"
+                                                    if timeout_flag:
+                                                        write_case_log(args.log_dir, case_id, f"inference_timeout: exceeded {args.timeout}s")
+                                                    else:
+                                                        err = msg.get("error", "unknown")
+                                                        trace = msg.get("trace", "")
+                                                        write_case_log(args.log_dir, case_id, f"inference_error: {err}\n{trace}")
                                                     tm = TrialMetrics(
                                                         load_ms=round(load_ms, 2),
                                                         first_token_ms=-1,
