@@ -31,7 +31,9 @@ import yaml
 # Add project root to path to allow absolute imports from other directories
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import logging
 from scripts.monitor import NVMLMonitor
+from scripts.logging_setup import setup_logging
 from llm_lab_core.runners import get_runner
 
 
@@ -287,7 +289,10 @@ def main() -> None:
     ap.add_argument("--load-timeout", type=float, default=600.0, help="Model load timeout seconds for worker startup/restart")
     ap.add_argument("--save-outputs", action="store_true", help="Save generated outputs per trial to files")
     ap.add_argument("--outputs-dir", default="results/outs", help="Directory to save outputs when --save-outputs")
+    ap.add_argument("--verbose", action="store_true", help="Enable verbose logging to stderr")
     args = ap.parse_args()
+
+    setup_logging(verbose=bool(args.verbose))
 
     sweep = yaml.safe_load(Path(args.sweep).read_text(encoding="utf-8"))
 
@@ -336,6 +341,7 @@ def main() -> None:
             for quant in quants:
                 for rt in runtimes:
                     # Start a worker process per (rt, model, quant) to keep warm and enable timeout
+                    logging.info(f"[load] runtime={rt} model={mid} quant={quant}")
                     worker = InferenceWorker(rt, mid, quant)
                     if not worker.start(timeout_s=float(args.load_timeout)):
                         # Log detailed load failure diagnostics
@@ -347,12 +353,15 @@ def main() -> None:
                         ]
                         if worker.last_info:
                             details.append(str(worker.last_info))
+                        path = Path(args.log_dir) / f"{case_id}.log"
                         write_case_log(args.log_dir, case_id, "\n".join(details))
+                        logging.error(f"[load-failed] {case_id} -> {path}")
                         reason = (worker.last_error or "unknown").replace("\n", " ")
                         w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_load_failed:{reason}", ""])
                         worker.terminate()
                         continue
                     load_ms = worker.load_ms
+                    logging.info(f"[loaded] runtime={rt} model={mid} quant={quant} load_ms={load_ms:.2f}")
 
                     for attn in attns:
                         for kv in kvs:
@@ -381,6 +390,7 @@ def main() -> None:
                                                 mon = NVMLMonitor()
                                                 if mon.available:
                                                     mon.start()
+                                                logging.info(f"[trial] {mid} q={quant} rt={rt} attn={attn} kv={kv}/{kvd} bs={bs} preset={pname} note={note}")
                                                 ok, msg = worker.generate(
                                                     batch_texts,
                                                     {
@@ -425,6 +435,7 @@ def main() -> None:
                                                         worker.terminate()
                                                         worker = InferenceWorker(rt, mid, quant)
                                                         worker.start(timeout_s=float(args.load_timeout))
+                                                    logging.warning(f"[trial-ended] timeout={timeout_flag} note={'timeout' if timeout_flag else 'error'} case={case_id}")
                                                 else:
                                                     timings = (msg.get("res") or {}).get("timings", {})
                                                     # Optionally save outputs
@@ -433,6 +444,7 @@ def main() -> None:
                                                         case_id = f"{mid}__{quant}__{rt}__{attn}__{kv}__{kvd}__bs{bs}__{pname}__{note}"
                                                         out_path = Path(args.outputs_dir) / f"{case_id}.txt"
                                                         try:
+                                                            out_path.parent.mkdir(parents=True, exist_ok=True)
                                                             with out_path.open("w", encoding="utf-8") as of:
                                                                 if texts:
                                                                     for i, t in enumerate(texts):
@@ -443,6 +455,7 @@ def main() -> None:
                                                                 else:
                                                                     of.write("")
                                                             out_path_str = str(out_path)
+                                                            logging.info(f"[saved] {out_path_str}")
                                                         except Exception:
                                                             out_path_str = ""
                                                     tm = TrialMetrics(
