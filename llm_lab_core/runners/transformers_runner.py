@@ -26,6 +26,8 @@ class TransformersRunner:
         model_kwargs: Dict[str, Any] = {}
         if quant in (None, "float16", "fp16"):
             model_kwargs["torch_dtype"] = torch.float16 if torch.cuda.is_available() else torch.float32
+            if torch.cuda.is_available():
+                model_kwargs["device_map"] = "auto"
         elif quant == "bnb-int8":
             from transformers import BitsAndBytesConfig
 
