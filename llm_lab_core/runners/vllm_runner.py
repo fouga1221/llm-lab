@@ -1,4 +1,7 @@
-"""Minimal vLLM runner (optional dependency)."""
+"""vLLM runner with simple timings and text outputs.
+
+Raises ImportError on missing dependency so the bench can skip cleanly.
+"""
 from __future__ import annotations
 
 import time
@@ -9,32 +12,55 @@ class VLLMRunner:
     def __init__(self) -> None:
         self.llm = None
         self.sampling_params = None
-        self.available = False
+        self.tok = None  # Optional HF tokenizer for token counting
 
     def load(self, model_id: str, **kwargs: Any) -> None:
         try:
             from vllm import LLM, SamplingParams  # type: ignore
-        except Exception:
-            self.available = False
-            return
+        except Exception as e:
+            raise ImportError(f"vLLM not installed or failed to import: {e}")
+
+        # Build engine
         self.llm = LLM(model=model_id)
         self.sampling_params = SamplingParams()
-        self.available = True
+
+        # Optional tokenizer (for tokens/s estimation)
+        try:
+            from transformers import AutoTokenizer  # lazy import
+            self.tok = AutoTokenizer.from_pretrained(model_id)
+        except Exception:
+            self.tok = None
 
     def generate(self, messages: List[Dict[str, str]], decode: Dict[str, Any], system_prompt: Optional[str] = None, json_only: bool = False) -> Dict[str, Any]:
-        # Not implementing chat template here; bench uses generate_text.
+        # Bench uses generate_text; keep signature for compatibility.
         return {"text": "", "usage": {"prompt_tokens": 0, "completion_tokens": 0}, "timings": {"first_token_ms": -1, "tokens_per_s": -1}, "mem": None}
 
     def generate_text(self, prompts: List[str], decode: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.available:
-            return {"texts": [], "timings": {"latency_ms": -1.0, "tokens_per_s": -1.0, "first_token_ms": -1.0}, "notes": "vLLM not installed"}
-        
         assert self.llm is not None and self.sampling_params is not None, "call load() first"
-        
+
+        # Map decode params to vLLM SamplingParams
+        try:
+            self.sampling_params.max_tokens = int(decode.get("max_new_tokens", 256))  # type: ignore[attr-defined]
+            self.sampling_params.temperature = float(decode.get("temperature", 0.4))  # type: ignore[attr-defined]
+            self.sampling_params.top_p = float(decode.get("top_p", 0.9))  # type: ignore[attr-defined]
+            # repetition_penalty is not directly supported in all versions; ignore if absent
+        except Exception:
+            pass
+
         t0 = time.perf_counter()
         outs = self.llm.generate(prompts, sampling_params=self.sampling_params)
         dt = (time.perf_counter() - t0) * 1000.0
         texts = [o.outputs[0].text for o in outs]
-        # tokens/s rough (requires token counts; skip)
-        return {"texts": texts, "timings": {"latency_ms": round(dt, 2), "tokens_per_s": -1.0, "first_token_ms": -1.0}}
 
+        # Rough tokens/s via tokenizer if available
+        tps = -1.0
+        if self.tok is not None:
+            try:
+                total_new = 0
+                for t in texts:
+                    total_new += len(self.tok(t, add_special_tokens=False).input_ids)
+                tps = round((total_new / (dt / 1000.0)), 2) if dt > 0 else -1.0
+            except Exception:
+                tps = -1.0
+
+        return {"texts": texts, "timings": {"latency_ms": round(dt, 2), "tokens_per_s": tps, "first_token_ms": -1.0}}

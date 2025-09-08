@@ -23,6 +23,10 @@ from dataclasses import dataclass
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 import sys
 import torch
@@ -31,9 +35,9 @@ import yaml
 # Add project root to path to allow absolute imports from other directories
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import logging
 from scripts.monitor import NVMLMonitor
-from scripts.logging_setup import setup_logging
+from llm_lab_core.utils.chat_template import apply_chat_template as hf_apply_chat_template
+from transformers import AutoTokenizer
 from llm_lab_core.runners import get_runner
 
 
@@ -292,7 +296,7 @@ def main() -> None:
     ap.add_argument("--verbose", action="store_true", help="Enable verbose logging to stderr")
     args = ap.parse_args()
 
-    setup_logging(verbose=bool(args.verbose))
+    logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
 
     sweep = yaml.safe_load(Path(args.sweep).read_text(encoding="utf-8"))
 
@@ -333,6 +337,48 @@ def main() -> None:
 
     set_seed(seed)
 
+    # Tokenizer cache per model id
+    tok_cache: Dict[str, Any] = {}
+
+    def get_tok(mid: str):
+        if mid not in tok_cache:
+            try:
+                tok_cache[mid] = AutoTokenizer.from_pretrained(mid)
+            except Exception:
+                tok_cache[mid] = None
+        return tok_cache[mid]
+
+    def to_messages(item: Any) -> List[Dict[str, str]]:
+        # Normalize an item to a messages list
+        if isinstance(item, dict) and isinstance(item.get("messages"), list):
+            return [dict(role=m.get("role","user"), content=str(m.get("content",""))) for m in item["messages"]]
+        if isinstance(item, list) and item and isinstance(item[0], dict) and "role" in item[0]:
+            return [dict(role=m.get("role","user"), content=str(m.get("content",""))) for m in item]
+        # Fallback: plain text as single user message
+        return [{"role": "user", "content": str(item)}]
+
+    def render_texts_for_runtime(mid: str, batch_items: List[Any]) -> List[str]:
+        tok = get_tok(mid)
+        texts: List[str] = []
+        for it in batch_items:
+            msgs = to_messages(it)
+            if tok is not None:
+                try:
+                    texts.append(hf_apply_chat_template(tok, msgs, add_generation_prompt=True))
+                    continue
+                except Exception:
+                    pass
+            # Fallback to generic tags if tokenizer missing
+            parts: List[str] = []
+            for m in msgs:
+                r = m.get("role","user")
+                c = m.get("content","")
+                tag = "system" if r=="system" else ("assistant" if r=="assistant" else "user")
+                parts.append(f"<|{tag}|>\n{c}")
+            parts.append("<|assistant|>\n")
+            texts.append("\n".join(parts))
+        return texts
+
     with out_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(CSV_HEADER)
@@ -344,7 +390,7 @@ def main() -> None:
                     logging.info(f"[load] runtime={rt} model={mid} quant={quant}")
                     worker = InferenceWorker(rt, mid, quant)
                     if not worker.start(timeout_s=float(args.load_timeout)):
-                        # Log detailed load failure diagnostics
+                        # Log and SKIP writing a CSV row
                         case_id = f"{mid}__{quant}__{rt}__load"
                         env = f"cuda_is_available={torch.cuda.is_available()} cuda_device_count={(torch.cuda.device_count() if torch.cuda.is_available() else 0)}"
                         details = [
@@ -355,9 +401,7 @@ def main() -> None:
                             details.append(str(worker.last_info))
                         path = Path(args.log_dir) / f"{case_id}.log"
                         write_case_log(args.log_dir, case_id, "\n".join(details))
-                        logging.error(f"[load-failed] {case_id} -> {path}")
-                        reason = (worker.last_error or "unknown").replace("\n", " ")
-                        w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_load_failed:{reason}", ""])
+                        logging.error(f"[skip-runtime] {case_id} -> {path}")
                         worker.terminate()
                         continue
                     load_ms = worker.load_ms
@@ -376,7 +420,7 @@ def main() -> None:
                                             batch_prompts = (batch_prompts or prompts[:1]) * bs
 
                                         batch_items = batch_prompts[:bs] or [batch_prompts[0]]
-                                        batch_texts = render_texts_simple(batch_items)
+                                        batch_texts = render_texts_for_runtime(mid, batch_items)
 
                                         # 1 warmup + (repeats-1) runs
                                         trials: List[TrialMetrics] = []
