@@ -136,6 +136,13 @@ def render_texts_simple(items: List[Any]) -> List[str]:
 
 # ---------------- Subprocess worker for timeout-safe inference ---------------- #
 import multiprocessing as mp
+# Ensure CUDA works with multiprocessing across platforms (Linux default is 'fork').
+# Using 'fork' breaks CUDA with PyTorch. Switch to 'spawn' if not already set.
+try:  # safe no-op if already set elsewhere
+    if mp.get_start_method(allow_none=True) != "spawn":
+        mp.set_start_method("spawn", force=True)
+except Exception:
+    pass
 
 
 def _worker_main(in_q: "mp.Queue", out_q: "mp.Queue", rt: str, model_id: str, quant: Optional[str]) -> None:  # pragma: no cover - runtime helper
