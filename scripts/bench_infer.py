@@ -17,15 +17,19 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
+import sys
 import time
 from dataclasses import dataclass
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import sys
 import torch
 import yaml
+
+# Add project root to path to allow absolute imports from other directories
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.monitor import NVMLMonitor
 from llm_lab_core.runners import get_runner
@@ -48,6 +52,7 @@ CSV_HEADER = [
     "oom",
     "timeout",
     "notes",
+    "out_path",
 ]
 
 
@@ -266,6 +271,8 @@ def main() -> None:
     ap.add_argument("--out", default="results/runs.csv", help="CSV output path")
     ap.add_argument("--log-dir", default="results/logs", help="Logs directory (for errors, etc.)")
     ap.add_argument("--timeout", type=float, default=60.0, help="Timeout seconds per case")
+    ap.add_argument("--save-outputs", action="store_true", help="Save generated outputs per trial to files")
+    ap.add_argument("--outputs-dir", default="results/outs", help="Directory to save outputs when --save-outputs")
     args = ap.parse_args()
 
     sweep = yaml.safe_load(Path(args.sweep).read_text(encoding="utf-8"))
@@ -292,6 +299,8 @@ def main() -> None:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     Path(args.log_dir).mkdir(parents=True, exist_ok=True)
+    if args.save_outputs:
+        Path(args.outputs_dir).mkdir(parents=True, exist_ok=True)
 
     # Preload prompts per preset
     preset_prompts: Dict[str, List[str]] = {}
@@ -315,7 +324,7 @@ def main() -> None:
                     # Start a worker process per (rt, model, quant) to keep warm and enable timeout
                     worker = InferenceWorker(rt, mid, quant)
                     if not worker.start(timeout_s=float(args.timeout)):
-                        w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_not_installed_or_failed"])
+                        w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_not_installed_or_failed", ""])
                         worker.terminate()
                         continue
                     load_ms = worker.load_ms
@@ -342,6 +351,7 @@ def main() -> None:
                                         for note in trial_notes:
                                             avg_util: Optional[float] = None
                                             peak_used_mb: Optional[float] = None
+                                            out_path_str = ""
                                             try:
                                                 mon = NVMLMonitor()
                                                 if mon.available:
@@ -384,6 +394,24 @@ def main() -> None:
                                                         worker.start(timeout_s=float(args.timeout))
                                                 else:
                                                     timings = (msg.get("res") or {}).get("timings", {})
+                                                    # Optionally save outputs
+                                                    if args.save_outputs:
+                                                        texts = (msg.get("res") or {}).get("texts", []) or []
+                                                        case_id = f"{mid}__{quant}__{rt}__{attn}__{kv}__{kvd}__bs{bs}__{pname}__{note}"
+                                                        out_path = Path(args.outputs_dir) / f"{case_id}.txt"
+                                                        try:
+                                                            with out_path.open("w", encoding="utf-8") as of:
+                                                                if texts:
+                                                                    for i, t in enumerate(texts):
+                                                                        if len(texts) > 1:
+                                                                            of.write(f"=== sample {i} ===\n")
+                                                                        of.write(str(t))
+                                                                        of.write("\n")
+                                                                else:
+                                                                    of.write("")
+                                                            out_path_str = str(out_path)
+                                                        except Exception:
+                                                            out_path_str = ""
                                                     tm = TrialMetrics(
                                                         load_ms=round(load_ms, 2),
                                                         first_token_ms=float(timings.get("first_token_ms", -1)),
@@ -428,6 +456,7 @@ def main() -> None:
                                                 tm.oom,
                                                 tm.timeout,
                                                 tm.notes,
+                                                out_path_str,
                                             ])
 
                                         # Aggregate median row for the run (excluding warmup)
@@ -459,6 +488,7 @@ def main() -> None:
                                                 1 if any(t.oom for t in runs) else 0,
                                                 1 if any((t.timeout == 1) for t in runs) else 0,
                                                 f"{pname}|median",
+                                                "",
                                             ])
 
                     worker.terminate()
