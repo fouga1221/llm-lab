@@ -17,24 +17,15 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import math
-import signal
-import sys
 import time
 from dataclasses import dataclass
 import traceback
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import yaml
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-    TextIteratorStreamer,
-)
 
 from scripts.monitor import NVMLMonitor
 from llm_lab_core.runners import get_runner
@@ -64,10 +55,6 @@ def now_ms() -> float:
     return time.perf_counter() * 1000.0
 
 
-def bytes_to_mb(x: int) -> float:
-    return round(x / (1024 * 1024), 2)
-
-
 def set_seed(seed: int) -> None:
     import random
     import numpy as np
@@ -79,23 +66,33 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def load_prompts_by_name(name: str) -> List[str]:
+def load_prompts_by_name(name: str) -> List[Any]:
     base = Path("data/prompts")
     # Try YAML list
     yml = base / f"{name}.yaml"
     if yml.exists():
         try:
             data = yaml.safe_load(yml.read_text(encoding="utf-8"))
+            # Supported formats:
+            # - {messages: [{role,content}, ...]}
+            # - {system: str, user: str}
+            # - ["prompt1", "prompt2"]
+            # - [{role,content}, ...] (single dialog as list)
             if isinstance(data, dict):
-                # New preset format with system/user/meta
-                if "user" in data or "system" in data:
-                    sys_txt = data.get("system", "")
-                    usr_txt = data.get("user", "")
-                    combined = (f"<|system|>\n{sys_txt}\n" if sys_txt else "") + f"<|user|>\n{usr_txt}\n<|assistant|>\n"
-                    return [combined]
+                if isinstance(data.get("messages"), list):
+                    return [{"messages": data["messages"]}]
+                if ("system" in data) or ("user" in data):
+                    msgs = []
+                    if data.get("system"):
+                        msgs.append({"role": "system", "content": str(data["system"])})
+                    if data.get("user"):
+                        msgs.append({"role": "user", "content": str(data["user"])})
+                    return [{"messages": msgs}]
                 if "prompts" in data:
                     return [str(x) for x in data["prompts"]]
             if isinstance(data, list):
+                if data and isinstance(data[0], dict) and "role" in data[0]:
+                    return [{"messages": data}]
                 return [str(x) for x in data]
         except Exception:
             pass
@@ -106,33 +103,135 @@ def load_prompts_by_name(name: str) -> List[str]:
     return ["こんにちは。調子はどう？"]
 
 
-def resolve_quant_config(quant: Optional[str]) -> Tuple[Dict[str, Any], Optional[BitsAndBytesConfig]]:
-    model_kwargs: Dict[str, Any] = {}
-    bnb_cfg: Optional[BitsAndBytesConfig] = None
-    if quant is None or quant in ("float16", "fp16"):
-        model_kwargs["torch_dtype"] = torch.float16 if torch.cuda.is_available() else torch.float32
-    elif quant == "bnb-int8":
-        bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
-        model_kwargs["quantization_config"] = bnb_cfg
-        model_kwargs["device_map"] = "auto"
-    elif quant in ("bnb-nf4", "bnb-4bit"):
-        bnb_cfg = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        )
-        model_kwargs["quantization_config"] = bnb_cfg
-        model_kwargs["device_map"] = "auto"
-    else:
-        # AWQ/GPTQ/GGUF etc.: assume pre-quantized weights are pointed by model id.
-        model_kwargs["torch_dtype"] = torch.float16 if torch.cuda.is_available() else torch.float32
-        model_kwargs["device_map"] = "auto"
-    return model_kwargs, bnb_cfg
+ 
 
 
-def build_inputs(tok, prompts: List[str]):
-    return tok(prompts, return_tensors="pt", padding=True)
+def render_texts_simple(items: List[Any]) -> List[str]:
+    def as_text(it: Any) -> str:
+        if isinstance(it, dict) and isinstance(it.get("messages"), list):
+            msgs = it["messages"]
+        elif isinstance(it, list) and it and isinstance(it[0], dict) and "role" in it[0]:
+            msgs = it
+        else:
+            return str(it)
+        parts: List[str] = []
+        for m in msgs:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            tag = "assistant" if role == "assistant" else ("system" if role == "system" else "user")
+            parts.append(f"<|{tag}|>\n{content}")
+        parts.append("<|assistant|>\n")
+        return "\n".join(parts)
+
+    return [as_text(x) for x in items]
+
+
+ 
+
+
+# ---------------- Subprocess worker for timeout-safe inference ---------------- #
+import multiprocessing as mp
+
+
+def _worker_main(in_q: "mp.Queue", out_q: "mp.Queue", rt: str, model_id: str, quant: Optional[str]) -> None:  # pragma: no cover - runtime helper
+    from llm_lab_core.runners import get_runner as _get_runner
+    import time as _time
+    import traceback as _traceback
+    # Local helper mirrors parent's behavior
+    def _set_attn(attn: str) -> None:
+        try:
+            if attn == "flash_attn_2":
+                try:
+                    torch.backends.cuda.enable_flash_sdp(True)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            elif attn == "sdpa":
+                try:
+                    torch.backends.cuda.enable_mem_efficient_sdp(True)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    t0 = _time.perf_counter()
+    runner = None
+    try:
+        runner = _get_runner(rt)
+        runner.load(model_id, quant=quant)
+        load_ms = (_time.perf_counter() - t0) * 1000.0
+        out_q.put({"event": "loaded", "ok": True, "load_ms": round(load_ms, 2)})
+    except Exception as e:
+        out_q.put({"event": "loaded", "ok": False, "error": str(e)})
+        return
+
+    while True:
+        msg = in_q.get()
+        if msg is None:
+            break
+        cmd = msg.get("cmd")
+        if cmd == "gen":
+            texts = msg.get("texts", [])
+            decode = msg.get("decode", {})
+            attn = msg.get("attn", "sdpa")
+            try:
+                if rt == "transformers":
+                    _set_attn(attn)
+                res = runner.generate_text(texts, decode)
+                out_q.put({"event": "result", "ok": True, "res": res})
+            except Exception as e:
+                out_q.put({"event": "result", "ok": False, "error": str(e), "trace": _traceback.format_exc()})
+        else:
+            out_q.put({"event": "unknown", "ok": False, "error": f"unknown cmd: {cmd}"})
+
+
+class InferenceWorker:
+    def __init__(self, rt: str, model_id: str, quant: Optional[str]) -> None:
+        self.rt = rt
+        self.model_id = model_id
+        self.quant = quant
+        self.proc: Optional[mp.Process] = None
+        self.in_q: "mp.Queue" = mp.Queue()
+        self.out_q: "mp.Queue" = mp.Queue()
+        self.load_ms: float = -1.0
+
+    def start(self, timeout_s: float = 120.0) -> bool:
+        if self.proc is not None and self.proc.is_alive():
+            return True
+        self.proc = mp.Process(target=_worker_main, args=(self.in_q, self.out_q, self.rt, self.model_id, self.quant), daemon=True)
+        self.proc.start()
+        try:
+            msg = self.out_q.get(timeout=timeout_s)
+        except Exception:
+            self.terminate()
+            return False
+        if not msg.get("ok", False):
+            self.terminate()
+            return False
+        self.load_ms = float(msg.get("load_ms", -1))
+        return True
+
+    def generate(self, texts: List[str], decode: Dict[str, Any], attn_impl: str, timeout_s: float) -> Tuple[bool, Dict[str, Any]]:
+        if self.proc is None or not self.proc.is_alive():
+            return False, {"error": "worker not running"}
+        self.in_q.put({"cmd": "gen", "texts": texts, "decode": decode, "attn": attn_impl})
+        try:
+            msg = self.out_q.get(timeout=timeout_s)
+            return bool(msg.get("ok", False)), msg
+        except Exception:
+            # timeout
+            return False, {"timeout": True}
+
+    def terminate(self) -> None:
+        try:
+            if self.proc is not None and self.proc.is_alive():
+                try:
+                    self.in_q.put(None)
+                except Exception:
+                    pass
+                self.proc.terminate()
+                self.proc.join(timeout=2.0)
+        finally:
+            self.proc = None
 
 
 @dataclass
@@ -148,152 +247,7 @@ class TrialMetrics:
     notes: str
 
 
-def run_transformers(
-    model_id: str,
-    revision: Optional[str],
-    quant: Optional[str],
-    attn_impl: str,
-    prompts: List[str],
-    max_new_tokens: int,
-    timeout_s: float,
-) -> TrialMetrics:
-    # Attention impl hint (requires compatible stack). We try to set via env/kwargs lightly.
-    if attn_impl == "flash_attn_2":
-        # Best-effort: many env combinations exist, we just hint via config if present.
-        try:
-            torch.backends.cuda.enable_flash_sdp(True)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-    elif attn_impl == "sdpa":
-        try:
-            torch.backends.cuda.enable_mem_efficient_sdp(True)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-    # Reset CUDA stats for clean measurement
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-
-    model_kwargs, _ = resolve_quant_config(quant)
-    t0 = now_ms()
-    tok = AutoTokenizer.from_pretrained(model_id, revision=revision)
-    model = AutoModelForCausalLM.from_pretrained(model_id, revision=revision, trust_remote_code=True, **model_kwargs)
-    load_ms = now_ms() - t0
-
-    # Prepare inputs (batch supported)
-    enc: Dict[str, torch.Tensor] = build_inputs(tok, prompts)  # type: ignore[assignment]
-    if torch.cuda.is_available():
-        enc = {k: v.to(model.device) for k, v in enc.items()}
-
-    # Stream to capture first token time
-    streamer = TextIteratorStreamer(tok, skip_special_tokens=True, decode_kwargs={"skip_special_tokens": True})
-
-    # Timeout handling
-    class Timeout(Exception):
-        pass
-
-    def handler(signum, frame):  # pragma: no cover - signal specific
-        raise Timeout()
-
-    first_token_ms = math.nan
-    oom = 0
-    timeout_flag = 0
-    avg_util: Optional[float] = None
-
-    mon = NVMLMonitor()
-    if mon.available:
-        mon.start()
-
-    t_start = now_ms()
-    try:
-        # Start generation in a thread so we can consume stream
-        import threading
-
-        out_texts: List[str] = [""] * enc["input_ids"].shape[0]
-
-        def _gen():
-            try:
-                # Pass kwargs explicitly to avoid TypedDict/union inference issues
-                model.generate(
-                    input_ids=enc["input_ids"],
-                    attention_mask=enc["attention_mask"],
-                    max_new_tokens=int(max_new_tokens),
-                    do_sample=True,
-                    temperature=0.4,
-                    top_p=0.9,
-                    repetition_penalty=1.1,
-                    streamer=streamer,
-                )
-            except torch.cuda.OutOfMemoryError:  # pragma: no cover - environment dependent
-                nonlocal oom
-                oom = 1
-
-        th = threading.Thread(target=_gen, daemon=True)
-
-        # Arm timeout
-        if timeout_s and timeout_s > 0:
-            signal.signal(signal.SIGALRM, handler)  # type: ignore[attr-defined]
-            signal.alarm(int(timeout_s))  # type: ignore[attr-defined]
-
-        th.start()
-        # Iterate tokens; the first arrival marks first_token_ms
-        got_first = False
-        t_first = None
-        for chunk in streamer:
-            if not got_first:
-                t_first = now_ms()
-                got_first = True
-            # naive: accumulate string (only for first sample visible)
-            out_texts[0] += chunk
-
-        th.join()
-        if timeout_s and timeout_s > 0:
-            signal.alarm(0)  # type: ignore[attr-defined]
-
-        if got_first and t_first is not None:
-            first_token_ms = t_first - t_start
-        else:
-            first_token_ms = math.nan
-    except Timeout:  # pragma: no cover - environment dependent
-        oom = 0
-        first_token_ms = math.inf
-        timeout_flag = 1
-    finally:
-        if mon.available:
-            mon.stop()
-            avg_util = mon.mean_util()
-            mon.close()
-
-    # tokens/s using decoded new tokens length for the first example
-    try:
-        total_ms = now_ms() - t_start
-        decoded = out_texts[0]
-        # Rough token count by re-encoding the new text
-        new_ids = tok(decoded, add_special_tokens=False).input_ids
-        tps = (len(new_ids) / (total_ms / 1000.0)) if total_ms > 0 else 0.0
-    except Exception:
-        tps = 0.0
-
-    # VRAM peaks
-    if torch.cuda.is_available():
-        peak_alloc = bytes_to_mb(torch.cuda.max_memory_allocated())
-        peak_reserved = bytes_to_mb(torch.cuda.max_memory_reserved())
-    else:
-        peak_alloc = -1.0
-        peak_reserved = -1.0
-
-    return TrialMetrics(
-        load_ms=round(load_ms, 2),
-        first_token_ms=round(first_token_ms, 2) if math.isfinite(first_token_ms) else -1.0,
-        tokens_per_s=round(tps, 2),
-        peak_vram_alloc_mb=peak_alloc,
-        peak_vram_reserved_mb=peak_reserved,
-        avg_gpu_util=round(avg_util, 2) if avg_util is not None else None,
-        oom=oom,
-        timeout=timeout_flag,
-        notes="",
-    )
+ 
 
 
 def write_case_log(log_dir: str, case_id: str, content: str) -> None:
@@ -358,44 +312,14 @@ def main() -> None:
         for mid in model_ids:
             for quant in quants:
                 for rt in runtimes:
-                    if rt != "transformers":
-                        # Try minimal runner path; if unavailable, record skip
-                        try:
-                            runner = get_runner(rt)
-                            runner.load(mid)
-                            for attn in attns:
-                                for kv in kvs:
-                                    for kvd in kv_dtypes:
-                                        for bs in batch_sizes:
-                                            for pr in presets:
-                                                pname = pr.get("name")
-                                                prompts = preset_prompts.get(pname) or ["こんにちは。調子はどう？"]
-                                                batch_prompts = prompts[:bs] or [prompts[0]]
-                                                t0 = now_ms()
-                                                res = runner.generate_text(batch_prompts, {"max_new_tokens": max_tokens, "temperature": 0.4, "top_p": 0.9, "repetition_penalty": 1.1})
-                                                dt = now_ms() - t0
-                                                timings = res.get("timings", {})
-                                                w.writerow([
-                                                    mid,
-                                                    quant,
-                                                    rt,
-                                                    attn,
-                                                    kv,
-                                                    kvd,
-                                                    bs,
-                                                    -1,  # load_ms unknown here
-                                                    timings.get("first_token_ms", -1),
-                                                    timings.get("tokens_per_s", -1),
-                                                    -1,
-                                                    -1,
-                                                    -1,
-                                                    0,
-                                                    0,
-                                                    f"{pname}|run",
-                                                ])
-                        except Exception:
-                            w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_not_installed"])
+                    # Start a worker process per (rt, model, quant) to keep warm and enable timeout
+                    worker = InferenceWorker(rt, mid, quant)
+                    if not worker.start(timeout_s=float(args.timeout)):
+                        w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_not_installed_or_failed"])
+                        worker.terminate()
                         continue
+                    load_ms = worker.load_ms
+
                     for attn in attns:
                         for kv in kvs:
                             for kvd in kv_dtypes:
@@ -408,35 +332,84 @@ def main() -> None:
                                         if len(batch_prompts) < bs:
                                             batch_prompts = (batch_prompts or prompts[:1]) * bs
 
+                                        batch_items = batch_prompts[:bs] or [batch_prompts[0]]
+                                        batch_texts = render_texts_simple(batch_items)
+
                                         # 1 warmup + (repeats-1) runs
                                         trials: List[TrialMetrics] = []
                                         trial_notes = ["warmup"] + ["run"] * (max(1, repeats - 1))
+
                                         for note in trial_notes:
+                                            avg_util: Optional[float] = None
+                                            peak_used_mb: Optional[float] = None
                                             try:
-                                                tm = run_transformers(
-                                                    model_id=mid,
-                                                    revision=None,
-                                                    quant=quant,
+                                                mon = NVMLMonitor()
+                                                if mon.available:
+                                                    mon.start()
+                                                ok, msg = worker.generate(
+                                                    batch_texts,
+                                                    {
+                                                        "max_new_tokens": max_tokens,
+                                                        "temperature": 0.4,
+                                                        "top_p": 0.9,
+                                                        "repetition_penalty": 1.1,
+                                                    },
                                                     attn_impl=attn,
-                                                    prompts=batch_prompts,
-                                                    max_new_tokens=max_tokens,
                                                     timeout_s=float(args.timeout),
                                                 )
-                                                tm.notes = f"{pname}|{note}"
+                                                if mon.available:
+                                                    mon.stop()
+                                                    avg_util = mon.mean_util()
+                                                    peak_used_mb = mon.peak_mem_used_mb()
+                                                    mon.close()
+
+                                                if not ok:
+                                                    # timeout or error
+                                                    timeout_flag = 1 if msg.get("timeout") else 0
+                                                    tm = TrialMetrics(
+                                                        load_ms=round(load_ms, 2),
+                                                        first_token_ms=-1,
+                                                        tokens_per_s=0.0,
+                                                        peak_vram_alloc_mb=peak_used_mb if peak_used_mb is not None else -1.0,
+                                                        peak_vram_reserved_mb=peak_used_mb if peak_used_mb is not None else -1.0,
+                                                        avg_gpu_util=round(avg_util, 2) if avg_util is not None else None,
+                                                        oom=0,
+                                                        timeout=timeout_flag,
+                                                        notes=f"{pname}|{'timeout' if timeout_flag else 'error'}",
+                                                    )
+                                                    if timeout_flag:
+                                                        # kill and restart worker for subsequent trials
+                                                        worker.terminate()
+                                                        worker = InferenceWorker(rt, mid, quant)
+                                                        worker.start(timeout_s=float(args.timeout))
+                                                else:
+                                                    timings = (msg.get("res") or {}).get("timings", {})
+                                                    tm = TrialMetrics(
+                                                        load_ms=round(load_ms, 2),
+                                                        first_token_ms=float(timings.get("first_token_ms", -1)),
+                                                        tokens_per_s=float(timings.get("tokens_per_s", -1)),
+                                                        peak_vram_alloc_mb=peak_used_mb if peak_used_mb is not None else -1.0,
+                                                        peak_vram_reserved_mb=peak_used_mb if peak_used_mb is not None else -1.0,
+                                                        avg_gpu_util=round(avg_util, 2) if avg_util is not None else None,
+                                                        oom=0,
+                                                        timeout=0,
+                                                        notes=f"{pname}|{note}",
+                                                    )
                                             except Exception as e:
                                                 tm = TrialMetrics(
-                                                    load_ms=-1,
+                                                    load_ms=round(load_ms, 2),
                                                     first_token_ms=-1,
                                                     tokens_per_s=0.0,
-                                                    peak_vram_alloc_mb=-1.0,
-                                                    peak_vram_reserved_mb=-1.0,
-                                                    avg_gpu_util=None,
+                                                    peak_vram_alloc_mb=peak_used_mb if peak_used_mb is not None else -1.0,
+                                                    peak_vram_reserved_mb=peak_used_mb if peak_used_mb is not None else -1.0,
+                                                    avg_gpu_util=round(avg_util, 2) if avg_util is not None else None,
                                                     oom=0,
                                                     timeout=0,
                                                     notes=f"{pname}|error:{type(e).__name__}",
                                                 )
                                                 case_id = f"{mid}__{quant}__{rt}__{attn}__{kv}__{kvd}__bs{bs}__{pname}__{note}"
                                                 write_case_log(args.log_dir, case_id, traceback.format_exc())
+
                                             trials.append(tm)
                                             w.writerow([
                                                 mid,
@@ -487,6 +460,8 @@ def main() -> None:
                                                 1 if any((t.timeout == 1) for t in runs) else 0,
                                                 f"{pname}|median",
                                             ])
+
+                    worker.terminate()
 
     print(f"Wrote {out_path}")
 

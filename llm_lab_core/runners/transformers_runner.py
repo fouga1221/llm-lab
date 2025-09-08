@@ -132,27 +132,63 @@ class TransformersRunner:
 
     def generate_text(self, prompts: List[str], decode: Dict[str, Any]) -> Dict[str, Any]:
         # For bench compatibility: treat prompts as already-formed text
+        # Collect first_token_ms using a streamer and estimate tokens/s on the first example.
         assert self.model is not None and self.tok is not None, "call load() first"
         enc = self.tok(prompts, return_tensors="pt", padding=True)
         if torch.cuda.is_available():
             enc = enc.to(self.model.device)
-        t0 = time.perf_counter()
-        out = self.model.generate(
-            input_ids=enc["input_ids"],
-            attention_mask=enc.get("attention_mask"),
-            max_new_tokens=int(decode.get("max_new_tokens", 256)),
-            do_sample=True,
-            temperature=float(decode.get("temperature", 0.4)),
-            top_p=float(decode.get("top_p", 0.9)),
-            repetition_penalty=float(decode.get("repetition_penalty", 1.1)),
-        )
-        dt = (time.perf_counter() - t0) * 1000.0
-        decoded = self.tok.batch_decode(out, skip_special_tokens=True)
-        new_ids = [self.tok(d[len(self.tok.batch_decode(enc["input_ids"], skip_special_tokens=True)[i]):], add_special_tokens=False).input_ids for i, d in enumerate(decoded)]  # rough
-        flat_new = sum(len(x) for x in new_ids)
-        tps = (flat_new / (dt / 1000.0)) if dt > 0 else 0.0
-        return {
-            "texts": decoded,
-            "timings": {"latency_ms": round(dt, 2), "tokens_per_s": round(tps, 2), "first_token_ms": -1.0},
-        }
 
+        max_new = int(decode.get("max_new_tokens", 256))
+        temperature = float(decode.get("temperature", 0.4))
+        top_p = float(decode.get("top_p", 0.9))
+        repetition_penalty = float(decode.get("repetition_penalty", 1.1))
+
+        streamer = TextIteratorStreamer(self.tok, skip_special_tokens=True)
+
+        first_token_ms = math.nan
+        t_start = time.perf_counter()
+
+        import threading
+
+        out_texts: List[str] = [""] * int(enc["input_ids"].shape[0])
+
+        def _gen():
+            assert self.model is not None
+            self.model.generate(
+                input_ids=enc["input_ids"],
+                attention_mask=enc.get("attention_mask"),
+                max_new_tokens=max_new,
+                do_sample=True,
+                temperature=temperature,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                streamer=streamer,
+            )
+
+        th = threading.Thread(target=_gen, daemon=True)
+        th.start()
+        got_first = False
+        for chunk in streamer:
+            if not got_first:
+                first_token_ms = (time.perf_counter() - t_start) * 1000.0
+                got_first = True
+            # Accumulate only for the first example; multi-sample accumulation is non-trivial with streamer
+            out_texts[0] += chunk
+        th.join()
+
+        total_ms = (time.perf_counter() - t_start) * 1000.0
+        # Rough token count by re-encoding the new text (first sample)
+        try:
+            new_ids = self.tok(out_texts[0], add_special_tokens=False).input_ids
+            tps = (len(new_ids) / (total_ms / 1000.0)) if total_ms > 0 else 0.0
+        except Exception:
+            tps = 0.0
+
+        return {
+            "texts": out_texts,
+            "timings": {
+                "latency_ms": round(total_ms, 2),
+                "tokens_per_s": round(tps, 2),
+                "first_token_ms": round(first_token_ms, 2) if math.isfinite(first_token_ms) else -1.0,
+            },
+        }

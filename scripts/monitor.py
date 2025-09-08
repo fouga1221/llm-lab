@@ -2,6 +2,7 @@
 Lightweight GPU monitor using NVML.
 
 - Starts a background thread to sample GPU utilization (%) every `interval_sec`.
+- Samples device memory usage (MB) via NVML and keeps a peak value.
 - Collects average utilization over the monitored window.
 - Falls back gracefully if NVML is not available.
 """
@@ -21,6 +22,7 @@ class NVMLMonitor:
         self._samples: List[float] = []
         self._ok = False
         self._err: Optional[str] = None
+        self._mem_peaks_mb: float = -1.0
 
         try:
             import pynvml  # type: ignore
@@ -45,6 +47,10 @@ class NVMLMonitor:
                 try:
                     util = self._pynvml.nvmlDeviceGetUtilizationRates(self._handle)  # type: ignore[attr-defined]
                     self._samples.append(float(util.gpu))
+                    mem = self._pynvml.nvmlDeviceGetMemoryInfo(self._handle)  # type: ignore[attr-defined]
+                    used_mb = float(mem.used) / (1024.0 * 1024.0)
+                    if used_mb > self._mem_peaks_mb:
+                        self._mem_peaks_mb = used_mb
                 except Exception:
                     # swallow intermittent errors
                     pass
@@ -78,6 +84,11 @@ class NVMLMonitor:
     def samples(self) -> List[float]:
         return list(self._samples)
 
+    def peak_mem_used_mb(self) -> Optional[float]:
+        if self._mem_peaks_mb < 0:
+            return None
+        return round(self._mem_peaks_mb, 2)
+
     def close(self) -> None:
         try:
             if self._pynvml is not None:
@@ -87,4 +98,3 @@ class NVMLMonitor:
 
 
 __all__ = ["NVMLMonitor"]
-
