@@ -68,7 +68,10 @@
 - 主なオプション
   - `--sweep`（必須）: スイープ設定YAML（例 `configs/sweep.example.yaml`）
   - `--out`（既定 `results/runs.csv`）: 出力CSV
-  - `--timeout`（既定 60）: ケースごとのタイムアウト秒
+  - `--timeout`（既定 300）: 推論（各試行）のタイムアウト秒
+  - `--load-timeout`（既定 600）: モデルロード（ワーカー起動/再起動）のタイムアウト秒
+  - `--save-outputs`: 各試行の生成テキストを保存
+  - `--outputs-dir`（既定 `results/outs`）: 出力保存先
 
 - 記録列
   - `model,quant,runtime,attn,kv,kv_dtype,batch_size,load_ms,first_token_ms,tokens_per_s,peak_vram_alloc_mb,peak_vram_reserved_mb,avg_gpu_util,oom,notes`

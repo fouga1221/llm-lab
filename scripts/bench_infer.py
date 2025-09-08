@@ -270,7 +270,8 @@ def main() -> None:
     ap.add_argument("--sweep", required=True, help="YAML describing models/quant/runtime/params")
     ap.add_argument("--out", default="results/runs.csv", help="CSV output path")
     ap.add_argument("--log-dir", default="results/logs", help="Logs directory (for errors, etc.)")
-    ap.add_argument("--timeout", type=float, default=60.0, help="Timeout seconds per case")
+    ap.add_argument("--timeout", type=float, default=100.0, help="Per-trial inference timeout seconds")
+    ap.add_argument("--load-timeout", type=float, default=600.0, help="Model load timeout seconds for worker startup/restart")
     ap.add_argument("--save-outputs", action="store_true", help="Save generated outputs per trial to files")
     ap.add_argument("--outputs-dir", default="results/outs", help="Directory to save outputs when --save-outputs")
     args = ap.parse_args()
@@ -323,7 +324,7 @@ def main() -> None:
                 for rt in runtimes:
                     # Start a worker process per (rt, model, quant) to keep warm and enable timeout
                     worker = InferenceWorker(rt, mid, quant)
-                    if not worker.start(timeout_s=float(args.timeout)):
+                    if not worker.start(timeout_s=float(args.load_timeout)):
                         w.writerow([mid, quant, rt, "-", "-", "-", 1, -1, -1, -1, -1, -1, -1, 0, 0, f"{rt}_not_installed_or_failed", ""])
                         worker.terminate()
                         continue
@@ -391,7 +392,7 @@ def main() -> None:
                                                         # kill and restart worker for subsequent trials
                                                         worker.terminate()
                                                         worker = InferenceWorker(rt, mid, quant)
-                                                        worker.start(timeout_s=float(args.timeout))
+                                                        worker.start(timeout_s=float(args.load_timeout))
                                                 else:
                                                     timings = (msg.get("res") or {}).get("timings", {})
                                                     # Optionally save outputs
