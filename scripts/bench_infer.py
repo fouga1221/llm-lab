@@ -300,14 +300,19 @@ def main() -> None:
 
     sweep = yaml.safe_load(Path(args.sweep).read_text(encoding="utf-8"))
 
-    models_cfg = sweep.get("models", [])
-    model_ids: List[str] = []
-    for m in models_cfg:
+    # models can be:
+    # - string: treated as HF repo id
+    # - dict: may include {hf: <hf_id>, gguf: <local_gguf_path>}
+    models_raw = sweep.get("models", [])
+    models_cfg: List[Dict[str, Any]] = []
+    for m in models_raw:
         if isinstance(m, str):
-            # allow plain id
-            model_ids.append(m)
-        elif isinstance(m, dict) and "hf" in m:
-            model_ids.append(m["hf"])
+            models_cfg.append({"hf": m})
+        elif isinstance(m, dict):
+            # Keep only relevant keys
+            kept = {k: v for k, v in m.items() if k in ("hf", "gguf")}
+            if kept:
+                models_cfg.append(kept)
     quants: List[Optional[str]] = sweep.get("quant", [None])
     runtimes: List[str] = sweep.get("runtime", ["transformers"])  # transformers|vllm|llamacpp|exllamav2
     attns: List[str] = sweep.get("attn_impl", ["sdpa"])  # sdpa|flash_attn_2|eager
@@ -337,16 +342,19 @@ def main() -> None:
 
     set_seed(seed)
 
-    # Tokenizer cache per model id
+    # Tokenizer cache per HF model id
     tok_cache: Dict[str, Any] = {}
 
-    def get_tok(mid: str):
-        if mid not in tok_cache:
+    def get_tok_for(model_cfg: Dict[str, Any]):
+        hf_id = model_cfg.get("hf")
+        if not hf_id:
+            return None
+        if hf_id not in tok_cache:
             try:
-                tok_cache[mid] = AutoTokenizer.from_pretrained(mid)
+                tok_cache[hf_id] = AutoTokenizer.from_pretrained(hf_id)
             except Exception:
-                tok_cache[mid] = None
-        return tok_cache[mid]
+                tok_cache[hf_id] = None
+        return tok_cache[hf_id]
 
     def to_messages(item: Any) -> List[Dict[str, str]]:
         # Normalize an item to a messages list
@@ -357,8 +365,8 @@ def main() -> None:
         # Fallback: plain text as single user message
         return [{"role": "user", "content": str(item)}]
 
-    def render_texts_for_runtime(mid: str, batch_items: List[Any]) -> List[str]:
-        tok = get_tok(mid)
+    def render_texts_for_runtime(model_cfg: Dict[str, Any], batch_items: List[Any]) -> List[str]:
+        tok = get_tok_for(model_cfg)
         texts: List[str] = []
         for it in batch_items:
             msgs = to_messages(it)
@@ -383,9 +391,29 @@ def main() -> None:
         w = csv.writer(f)
         w.writerow(CSV_HEADER)
 
-        for mid in model_ids:
+        # Helper: select model id per runtime
+        def select_model_id(rt: str, mcfg: Dict[str, Any]) -> Optional[str]:
+            rt = (rt or "").lower()
+            if rt in ("transformers", "vllm"):
+                return mcfg.get("hf")
+            if rt == "llamacpp":
+                return mcfg.get("gguf")
+            if rt == "exllamav2":
+                # If ever extended, allow specifying a local GPTQ path
+                return mcfg.get("gptq") or mcfg.get("hf")
+            return mcfg.get("hf")
+
+        for mcfg in models_cfg:
             for quant in quants:
                 for rt in runtimes:
+                    mid = select_model_id(rt, mcfg)
+                    base_name = mcfg.get("hf") or mcfg.get("gguf") or "unknown"
+                    if not mid:
+                        # No model available for this runtime; log and continue
+                        case_id = f"{base_name}__{quant}__{rt}__no_model_for_runtime"
+                        write_case_log(args.log_dir, case_id, f"no_model_id_for_runtime: model={mcfg} runtime={rt}")
+                        logging.error(f"[skip-runtime] {case_id} -> {Path(args.log_dir) / (case_id + '.log')}" )
+                        continue
                     # Start a worker process per (rt, model, quant) to keep warm and enable timeout
                     logging.info(f"[load] runtime={rt} model={mid} quant={quant}")
                     worker = InferenceWorker(rt, mid, quant)
@@ -420,7 +448,7 @@ def main() -> None:
                                             batch_prompts = (batch_prompts or prompts[:1]) * bs
 
                                         batch_items = batch_prompts[:bs] or [batch_prompts[0]]
-                                        batch_texts = render_texts_for_runtime(mid, batch_items)
+                                        batch_texts = render_texts_for_runtime(mcfg, batch_items)
 
                                         # 1 warmup + (repeats-1) runs
                                         trials: List[TrialMetrics] = []

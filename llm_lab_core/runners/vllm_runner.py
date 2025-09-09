@@ -1,5 +1,10 @@
 """vLLM runner with simple timings and text outputs.
 
+Adds basic support for quantization modes:
+- float16 (default): dtype set to float16
+- awq-int4: quantization="awq"
+- gptq-int4: quantization="gptq"
+
 Raises ImportError on missing dependency so the bench can skip cleanly.
 """
 from __future__ import annotations
@@ -20,8 +25,30 @@ class VLLMRunner:
         except Exception as e:
             raise ImportError(f"vLLM not installed or failed to import: {e}")
 
+        # Map bench quant -> vLLM quantization/dtype
+        quant: Optional[str] = kwargs.get("quant")
+        vllm_quant: Optional[str] = None
+        dtype: str = "auto"
+        if quant in (None, "float16", "fp16"):
+            # Use FP16 kernels when available
+            dtype = "float16"
+            vllm_quant = None
+        elif isinstance(quant, str) and quant.lower().startswith("awq"):
+            # Pre-quantized AWQ weights are required
+            vllm_quant = "awq"
+            dtype = "auto"
+        elif isinstance(quant, str) and quant.lower().startswith("gptq"):
+            # Pre-quantized GPTQ weights are required
+            vllm_quant = "gptq"
+            dtype = "auto"
+        else:
+            # Common unsupported cases (e.g., bnb-*) -> raise to let bench skip
+            raise ImportError(f"Unsupported quant for vLLM: {quant}")
+
         # Build engine
-        self.llm = LLM(model=model_id)
+        # Note: additional options (tensor_parallel_size, gpu_memory_utilization, etc.)
+        # can be injected here if needed later.
+        self.llm = LLM(model=model_id, dtype=dtype, quantization=vllm_quant)
         self.sampling_params = SamplingParams()
 
         # Optional tokenizer (for tokens/s estimation)

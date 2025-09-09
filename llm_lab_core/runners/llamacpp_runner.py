@@ -1,11 +1,17 @@
 """llama.cpp runner (GGUF) with simple timings.
 
+Adds basic GPU config injection when available:
+- n_gpu_layers=-1 (all layers on GPU when built with cuBLAS)
+- n_ctx default to 8192 (can be overridden via kwargs["n_ctx"])
+
 Raises ImportError on missing dependency so the bench can skip cleanly.
 """
 from __future__ import annotations
 
 import time
 from typing import Any, Dict, List
+import os
+import warnings
 
 
 class LlamaCppRunner:
@@ -19,8 +25,23 @@ class LlamaCppRunner:
             from llama_cpp import Llama  # type: ignore
         except Exception as e:
             raise ImportError(f"llama-cpp-python not installed or failed to import: {e}")
+
         # model_id should be path to GGUF file
-        self.llm = Llama(model_path=model_id)  # type: ignore[call-arg]
+        # Inject minimal GPU options if the wheel was built with CUDA/cuBLAS.
+        # If CPU-only build, llama.cpp will ignore n_gpu_layers.
+        n_ctx = int(kwargs.get("n_ctx", os.environ.get("LLAMACPP_N_CTX", 8192)))
+        n_gpu_layers = kwargs.get("n_gpu_layers", -1)
+        try:
+            self.llm = Llama(  # type: ignore[call-arg]
+                model_path=model_id,
+                n_ctx=n_ctx,
+                n_gpu_layers=n_gpu_layers,
+                verbose=False,
+            )
+        except TypeError:
+            # Older versions may not accept verbose/n_gpu_layers; retry gracefully
+            warnings.warn("llama.cpp init without GPU opts due to incompatible version")
+            self.llm = Llama(model_path=model_id, n_ctx=n_ctx)  # type: ignore[call-arg]
         self.available = True
         # Optional tokenizer (if a matching HF model id is provided via kwargs)
         tok_id = kwargs.get("tokenizer_id")
